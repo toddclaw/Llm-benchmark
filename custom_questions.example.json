@@ -1,0 +1,41 @@
+{
+  "description": "Template for your own questions. Copy this file (e.g. to my_questions.json), edit the entries, then run with: python3 benchmark.py run --questions built-in my_questions.json ... See README.md 'Adding your own questions' for the grading-type decision guide.",
+  "questions": [
+    {
+      "id": "custom_numeric_01",
+      "category": "custom",
+      "prompt": "How many days are in a leap year? Respond with only the number.",
+      "grading": {"type": "numeric", "answer": 366}
+    },
+    {
+      "id": "custom_exact_01",
+      "category": "custom",
+      "prompt": "What HTTP status code means 'Not Found'? Respond with only the number.",
+      "grading": {"type": "exact", "answer": "404"}
+    },
+    {
+      "id": "custom_regex_01",
+      "category": "custom",
+      "prompt": "Is the number 17 prime? Respond with only TRUE or FALSE.",
+      "grading": {"type": "regex", "pattern": "^true$"}
+    },
+    {
+      "id": "custom_json_01",
+      "category": "custom",
+      "prompt": "Respond with valid JSON only (no other text): an object with key \"status\" set to \"ok\".",
+      "grading": {"type": "json", "expected": {"status": "ok"}}
+    },
+    {
+      "id": "custom_keywords_01",
+      "category": "custom",
+      "prompt": "In two or three sentences, what should someone do if the deploy pipeline fails? (Replace this with a real question about your own domain/docs.)",
+      "grading": {
+        "type": "keywords",
+        "required": ["rollback", ["pagerduty", "on-call", "on call"]],
+        "optional": ["logs", "runbook"],
+        "min_required": 2,
+        "case_sensitive": false
+      }
+    }
+  ]
+}

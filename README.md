@@ -134,6 +134,7 @@ python3 benchmark.py compare results/llama3.1_8b_*.json results/qwen2.5_14b_*.js
 
 ## Other useful flags
 
+- `--questions built-in my_questions.json` — merge the built-in bank with your own file(s); see "Adding your own questions" below
 - `--category math` — run only one category (fast smoke test)
 - `--limit 10` — run only the first N matching questions
 - `--concurrency 4` — send requests in parallel (throughput testing; default is sequential for clean latency numbers)
@@ -141,22 +142,99 @@ python3 benchmark.py compare results/llama3.1_8b_*.json results/qwen2.5_14b_*.js
 - `--output ''` — don't save a results file (e.g. for one-off checks)
 - `python3 benchmark.py categories` — list category names/counts in the question bank
 
-## Extending the question bank
+## Adding your own questions
 
-`questions.json` is plain JSON; add entries following the existing shape.
-Grading types available:
+Keep the built-in bank as-is and add your own questions in a separate
+file — this keeps `git pull`-ing tool updates from clobbering your data,
+and keeps a duplicate-id check between files instead of a silent merge.
 
-- `numeric` — `{"type": "numeric", "answer": 42, "tolerance": 0}`
-- `exact` — `{"type": "exact", "answer": "paris", "case_sensitive": false}`
-- `contains` — `{"type": "contains", "answer": "substring"}`
-- `regex` — `{"type": "regex", "pattern": "^hola$"}`
-- `json` — `{"type": "json", "expected": {"a": 1, "b": 2}}`
+1. Copy `custom_questions.example.json` to e.g. `my_questions.json` and
+   edit the entries (same JSON shape as `questions.json`: `id`, `category`,
+   `prompt`, `grading`).
+2. Run with both files — `built-in` is shorthand for the bundled bank so
+   you don't need its absolute path:
 
-Responses are cleaned before grading: `<think>...</think>` blocks (from
-local reasoning models) and wrapping markdown code fences are stripped
-first. If you change the question set, old and new runs get different
-`questions_hash` values, so stale comparisons are flagged instead of
-silently mixing scores from different question sets.
+   ```bash
+   python3 benchmark.py run --questions built-in my_questions.json \
+     --base-url ... --api-key ... --model ...
+   ```
+
+   Or run only your own set: `--questions my_questions.json`.
+3. `benchmark.py categories --questions built-in my_questions.json` lists
+   category counts across the merged set so you can sanity-check it loaded.
+
+Loading validates every question up front (unknown grading type, missing
+fields, duplicate `id` across files) and fails with a specific error
+message rather than crashing mid-run.
+
+### Choosing a grading type
+
+The core design constraint: grading is entirely programmatic (no LLM judge,
+no human-in-the-loop), so every question needs an answer a script can check
+unambiguously. Work through these in order:
+
+1. **Single correct number** (a count, a port, a year) → `numeric`, with
+   optional `tolerance` for approximate answers.
+2. **Single correct short string** (a word, a code, a status) → `exact`
+   (whole normalized response must match) or `contains` (must appear
+   somewhere in the response).
+3. **A few acceptable phrasings** ("hola" vs "¡Hola!") → `regex`.
+4. **Structured output** (you asked for JSON) → `json`, compared by value.
+5. **Longer or open-ended answers that must cover certain facts** — this is
+   the common case for your own domain data: RAG-style Q&A over internal
+   docs, "summarize this incident," "what's our policy on X" — use
+   `keywords` (see below). It's the right tool whenever there's no single
+   correct string, but there *is* a checklist of facts a correct answer has
+   to hit.
+6. **Genuinely open-ended/subjective** (creative writing, "is this a good
+   response", tone/style) — out of scope for this tool's deterministic
+   grading. Don't try to force it into `keywords`; either reframe the task
+   so a correct answer is checkable (ask for a specific fact, a structured
+   field, a yes/no judgment against a rubric you define), or accept that
+   quality here needs a human or a separate LLM-judge pipeline, which this
+   tool intentionally doesn't do (an LLM judging itself, or a possibly-also-
+   degraded model, is a shaky source of truth for exactly the kind of
+   regression you're trying to catch).
+
+### `keywords` grading (partial credit)
+
+```json
+{
+  "type": "keywords",
+  "required": ["rollback", ["pagerduty", "on-call", "on call"]],
+  "optional": ["logs", "runbook"],
+  "min_required": 2,
+  "case_sensitive": false
+}
+```
+
+- `required` — terms the answer should cover. Each entry is either a
+  string, or a list of alternative phrasings where any one counts (like
+  `["pagerduty", "on-call", "on call"]` above — the model doesn't have to
+  use your exact wording).
+- `optional` — bonus terms that add to the score but aren't required to
+  pass.
+- `min_required` — how many of the `required` terms must be present to
+  count as a pass/fail `correct` (default: all of them). Use this for "must
+  mention at least N of these key points."
+- `score` = (matched required + matched optional) / (total required +
+  total optional) — this is what makes it *partial credit* rather than
+  pass/fail: matching 2 of 3 required facts is a 0.67, not a 0.
+
+This changes the run output: `correct`/`accuracy_pct` stays a strict
+pass/fail count (did it hit `min_required`?), and a second **Avg score**
+figure appears — the mean of the continuous `score` across questions that
+have one. Watch both: accuracy can stay flat (still technically "passing")
+while avg score quietly drops, which is often the earlier, more sensitive
+signal of degradation than a hard pass/fail count — a good thing to trend
+in `history` over time.
+
+Responses are cleaned before grading regardless of type:
+`<think>...</think>` blocks (from local reasoning models) and wrapping
+markdown code fences are stripped first. If you change any question set,
+old and new runs get different `questions_hash` values, so stale
+comparisons are flagged instead of silently mixing scores from different
+question sets.
 
 ## Notes / limitations
 

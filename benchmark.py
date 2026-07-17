@@ -28,7 +28,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_QUESTIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "questions.json")
 DEFAULT_RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
 
@@ -92,7 +92,18 @@ def extract_json(text):
     return None
 
 
+def _keyword_hit(item, hay, case_sensitive):
+    """item is a keyword string, or a list of alternative phrasings (any one counts)."""
+    alts = item if isinstance(item, list) else [item]
+    for alt in alts:
+        needle = alt if case_sensitive else alt.lower()
+        if needle in hay:
+            return True
+    return False
+
+
 def grade(question, raw_response):
+    """Returns (correct: bool, note: str|None, score: float in [0, 1])."""
     g = question["grading"]
     gtype = g["type"]
     response = clean_response(raw_response)
@@ -100,34 +111,76 @@ def grade(question, raw_response):
     if gtype == "numeric":
         val = extract_last_number(response)
         if val is None:
-            return False, "no number found in response"
+            return False, "no number found in response", 0.0
         tolerance = g.get("tolerance", 0)
         ok = abs(val - float(g["answer"])) <= tolerance
-        return ok, None
+        return ok, None, 1.0 if ok else 0.0
 
     if gtype == "exact":
         case_sensitive = g.get("case_sensitive", False)
         got = normalize_text(response, case_sensitive)
         want = normalize_text(str(g["answer"]), case_sensitive)
-        return got == want, None
+        ok = got == want
+        return ok, None, 1.0 if ok else 0.0
 
     if gtype == "contains":
         case_sensitive = g.get("case_sensitive", False)
         hay = response if case_sensitive else response.lower()
         needle = str(g["answer"]) if case_sensitive else str(g["answer"]).lower()
-        return needle in hay, None
+        ok = needle in hay
+        return ok, None, 1.0 if ok else 0.0
 
     if gtype == "regex":
         flags = re.IGNORECASE if not g.get("case_sensitive", False) else 0
-        return re.search(g["pattern"], response.strip(), flags) is not None, None
+        ok = re.search(g["pattern"], response.strip(), flags) is not None
+        return ok, None, 1.0 if ok else 0.0
 
     if gtype == "json":
         parsed = extract_json(response)
         if parsed is None:
-            return False, "no valid JSON found in response"
-        return parsed == g["expected"], None
+            return False, "no valid JSON found in response", 0.0
+        ok = parsed == g["expected"]
+        return ok, None, 1.0 if ok else 0.0
+
+    if gtype == "keywords":
+        case_sensitive = g.get("case_sensitive", False)
+        hay = response if case_sensitive else response.lower()
+        required = g.get("required", [])
+        optional = g.get("optional", [])
+        req_hits = sum(1 for item in required if _keyword_hit(item, hay, case_sensitive))
+        opt_hits = sum(1 for item in optional if _keyword_hit(item, hay, case_sensitive))
+        total = len(required) + len(optional)
+        score = (req_hits + opt_hits) / total if total else 0.0
+        min_required = g.get("min_required", len(required))
+        ok = req_hits >= min_required
+        note = None if ok else f"matched {req_hits}/{len(required)} required keywords (need {min_required})"
+        return ok, note, score
 
     raise ValueError(f"unknown grading type: {gtype}")
+
+
+def validate_question(q, source):
+    for field in ("id", "category", "prompt", "grading"):
+        if field not in q:
+            raise ValueError(f"question in {source} is missing required field '{field}': {q}")
+    g = q["grading"]
+    gtype = g.get("type")
+    known = {"numeric", "exact", "contains", "regex", "json", "keywords"}
+    if gtype not in known:
+        raise ValueError(f"question '{q['id']}' in {source} has unknown grading type '{gtype}' "
+                          f"(expected one of {sorted(known)})")
+    if gtype in ("numeric",) and "answer" not in g:
+        raise ValueError(f"question '{q['id']}' in {source}: numeric grading needs 'answer'")
+    if gtype in ("exact", "contains") and "answer" not in g:
+        raise ValueError(f"question '{q['id']}' in {source}: {gtype} grading needs 'answer'")
+    if gtype == "regex" and "pattern" not in g:
+        raise ValueError(f"question '{q['id']}' in {source}: regex grading needs 'pattern'")
+    if gtype == "json" and "expected" not in g:
+        raise ValueError(f"question '{q['id']}' in {source}: json grading needs 'expected'")
+    if gtype == "keywords":
+        if not g.get("required"):
+            raise ValueError(f"question '{q['id']}' in {source}: keywords grading needs a non-empty "
+                              f"'required' list")
 
 
 # --------------------------------------------------------------------------
@@ -193,12 +246,36 @@ def call_with_retries(base_url, api_key, model, prompt, max_tokens, temperature,
 # Run command
 # --------------------------------------------------------------------------
 
-def load_questions(path, category_filter=None, limit=None):
-    with open(path, "rb") as f:
-        raw = f.read()
-    questions_hash = hashlib.sha256(raw).hexdigest()[:16]
-    data = json.loads(raw.decode("utf-8"))
-    questions = data["questions"]
+def resolve_questions_path(path):
+    if path.lower() in ("built-in", "builtin", "default"):
+        return DEFAULT_QUESTIONS_FILE
+    return path
+
+
+def load_questions(paths, category_filter=None, limit=None):
+    """Load and merge one or more question-bank JSON files.
+
+    Raises ValueError with a descriptive message on missing fields, unknown
+    grading types, or duplicate question ids across files.
+    """
+    all_questions = []
+    seen_ids = {}
+    for raw_path in paths:
+        path = resolve_questions_path(raw_path)
+        with open(path) as f:
+            data = json.load(f)
+        for q in data["questions"]:
+            validate_question(q, path)
+            if q["id"] in seen_ids:
+                raise ValueError(f"duplicate question id '{q['id']}' in {path} "
+                                  f"(already defined in {seen_ids[q['id']]})")
+            seen_ids[q["id"]] = path
+            all_questions.append(q)
+
+    canonical = json.dumps(sorted(all_questions, key=lambda q: q["id"]), sort_keys=True).encode("utf-8")
+    questions_hash = hashlib.sha256(canonical).hexdigest()[:16]
+
+    questions = all_questions
     if category_filter:
         questions = [q for q in questions if q["category"] == category_filter]
     if limit:
@@ -218,11 +295,11 @@ def run_one(question, base_url, api_key, model, max_tokens, temperature, timeout
             base_url, api_key, model, question["prompt"], max_tokens, temperature, timeout, retries
         )
     except ApiError as e:
-        entry.update({"correct": False, "error": str(e), "latency_s": None,
+        entry.update({"correct": False, "score": 0.0, "error": str(e), "latency_s": None,
                        "tokens_per_sec": None, "response": None})
         return entry
 
-    correct, grade_note = grade(question, content)
+    correct, grade_note, score = grade(question, content)
     completion_tokens = usage.get("completion_tokens")
     tokens_estimated = completion_tokens is None
     if completion_tokens is None:
@@ -231,6 +308,7 @@ def run_one(question, base_url, api_key, model, max_tokens, temperature, timeout
 
     entry.update({
         "correct": correct,
+        "score": round(score, 4),
         "error": grade_note if not correct else None,
         "latency_s": round(elapsed, 4),
         "completion_tokens": completion_tokens,
@@ -245,15 +323,20 @@ def summarize(results):
     total = len(results)
     correct = sum(1 for r in results if r["correct"])
     errors = sum(1 for r in results if r.get("error") and r.get("latency_s") is None)
+    scores = [r["score"] for r in results if r.get("score") is not None]
 
     by_category = {}
     for r in results:
-        c = by_category.setdefault(r["category"], {"correct": 0, "total": 0})
+        c = by_category.setdefault(r["category"], {"correct": 0, "total": 0, "scores": []})
         c["total"] += 1
         if r["correct"]:
             c["correct"] += 1
+        if r.get("score") is not None:
+            c["scores"].append(r["score"])
     for c in by_category.values():
         c["pct"] = round(100 * c["correct"] / c["total"], 1) if c["total"] else 0.0
+        c["avg_score_pct"] = round(100 * statistics.mean(c["scores"]), 1) if c["scores"] else None
+        del c["scores"]
 
     latencies = [r["latency_s"] for r in results if r.get("latency_s") is not None]
     tps_values = [r["tokens_per_sec"] for r in results if r.get("tokens_per_sec")]
@@ -268,6 +351,7 @@ def summarize(results):
 
     summary = {
         "accuracy_pct": round(100 * correct / total, 1) if total else 0.0,
+        "avg_score_pct": round(100 * statistics.mean(scores), 1) if scores else None,
         "correct": correct,
         "total": total,
         "errors": errors,
@@ -288,12 +372,24 @@ def summarize(results):
     return summary
 
 
+def uses_partial_credit(summary):
+    """True if avg_score_pct differs meaningfully from accuracy_pct, i.e. at least one
+    partial-credit ('keywords') question was graded, so it's worth a separate line."""
+    if summary.get("avg_score_pct") is None:
+        return False
+    return abs(summary["avg_score_pct"] - summary["accuracy_pct"]) >= 0.05
+
+
 def sanitize_filename(s):
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", s)
 
 
 def cmd_run(args):
-    questions, qhash = load_questions(args.questions, args.category, args.limit)
+    try:
+        questions, qhash = load_questions(args.questions, args.category, args.limit)
+    except (ValueError, OSError, KeyError, json.JSONDecodeError) as e:
+        print(f"Error loading questions: {e}", file=sys.stderr)
+        return 1
     if not questions:
         print("No questions matched the given filters.", file=sys.stderr)
         return 1
@@ -333,7 +429,7 @@ def cmd_run(args):
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "model": args.model,
         "base_url": args.base_url,
-        "questions_file": os.path.basename(args.questions),
+        "questions_file": ",".join(os.path.basename(resolve_questions_path(p)) for p in args.questions),
         "questions_hash": qhash,
         "num_questions": len(questions),
         "concurrency": args.concurrency,
@@ -376,13 +472,22 @@ def cmd_run(args):
 
 def print_summary(run_record):
     s = run_record["summary"]
+    show_score = uses_partial_credit(s)
     print("\n" + "=" * 60)
     print(f"Model:     {run_record['model']}")
     print(f"Accuracy:  {s['accuracy_pct']}%  ({s['correct']}/{s['total']}, {s['errors']} errors)")
+    if show_score:
+        print(f"Avg score: {s['avg_score_pct']}%  (partial credit, from 'keywords'-graded questions)")
     print("-" * 60)
-    print(f"{'Category':<14}{'Correct':>10}{'Total':>8}{'Pct':>8}")
-    for cat, c in sorted(s["by_category"].items()):
-        print(f"{cat:<14}{c['correct']:>10}{c['total']:>8}{c['pct']:>7}%")
+    if show_score:
+        print(f"{'Category':<14}{'Correct':>10}{'Total':>8}{'Pct':>8}{'AvgScore':>10}")
+        for cat, c in sorted(s["by_category"].items()):
+            avg = f"{c['avg_score_pct']}%" if c["avg_score_pct"] is not None else "n/a"
+            print(f"{cat:<14}{c['correct']:>10}{c['total']:>8}{c['pct']:>7}%{avg:>10}")
+    else:
+        print(f"{'Category':<14}{'Correct':>10}{'Total':>8}{'Pct':>8}")
+        for cat, c in sorted(s["by_category"].items()):
+            print(f"{cat:<14}{c['correct']:>10}{c['total']:>8}{c['pct']:>7}%")
     print("-" * 60)
     lat = s["latency_s"]
     tps = s["tokens_per_sec"]
@@ -449,6 +554,10 @@ def print_comparison(old, new):
     acc_delta = new_s["accuracy_pct"] - old_s["accuracy_pct"]
     print(f"Accuracy:   {old_s['accuracy_pct']}% -> {new_s['accuracy_pct']}%  "
           f"({fmt_delta(acc_delta, '%')})")
+
+    old_avg, new_avg = old_s.get("avg_score_pct"), new_s.get("avg_score_pct")
+    if old_avg is not None and new_avg is not None:
+        print(f"Avg score:  {old_avg}% -> {new_avg}%  ({fmt_delta(new_avg - old_avg, '%')})")
 
     cats = sorted(set(old_s["by_category"]) | set(new_s["by_category"]))
     for cat in cats:
@@ -533,7 +642,11 @@ def cmd_ping(args):
 
 
 def cmd_categories(args):
-    questions, _ = load_questions(args.questions)
+    try:
+        questions, _ = load_questions(args.questions)
+    except (ValueError, OSError, KeyError, json.JSONDecodeError) as e:
+        print(f"Error loading questions: {e}", file=sys.stderr)
+        return 1
     from collections import Counter
     counts = Counter(q["category"] for q in questions)
     for cat, n in sorted(counts.items()):
@@ -563,7 +676,10 @@ def build_parser():
 
     p_run = sub.add_parser("run", help="run the benchmark against a model")
     add_connection_args(p_run)
-    p_run.add_argument("--questions", default=DEFAULT_QUESTIONS_FILE, help="path to questions JSON file")
+    p_run.add_argument("--questions", nargs="+", default=[DEFAULT_QUESTIONS_FILE],
+                        help="one or more question JSON files to merge and run (use 'built-in' as a "
+                             "shorthand for the bundled questions.json, e.g. "
+                             "--questions built-in my_questions.json)")
     p_run.add_argument("--category", default=None, help="only run questions in this category")
     p_run.add_argument("--limit", type=int, default=None, help="only run the first N matching questions")
     p_run.add_argument("--output", default=DEFAULT_RESULTS_DIR,
@@ -593,7 +709,9 @@ def build_parser():
     p_ping.set_defaults(func=cmd_ping)
 
     p_cat = sub.add_parser("categories", help="list question categories and counts")
-    p_cat.add_argument("--questions", default=DEFAULT_QUESTIONS_FILE, help="path to questions JSON file")
+    p_cat.add_argument("--questions", nargs="+", default=[DEFAULT_QUESTIONS_FILE],
+                        help="one or more question JSON files to merge (use 'built-in' as a shorthand "
+                             "for the bundled questions.json)")
     p_cat.set_defaults(func=cmd_categories)
 
     return parser
