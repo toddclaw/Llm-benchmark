@@ -23,15 +23,32 @@ endpoint you point it at.
 
 ## How it works
 
-`questions.json` ships 60 questions across 5 categories (12 each):
+`questions.json` ships 120 questions across 10 categories (12 each):
 
 | Category      | Tests |
 |---------------|-------|
 | `math`        | Arithmetic and basic word problems |
 | `logic`       | Short deductive-reasoning puzzles |
 | `code`        | Predicting exact output of small Python snippets |
+| `python`      | Forward-development Python: functions, comprehensions, closures, generators, error handling |
+| `c`           | Forward-development C: pointers, arrays, bit ops, integer/`unsigned` semantics, `sizeof`, precedence |
+| `cpp`         | Forward-development C++: STL containers/algorithms, strings, references, templates, lambdas, smart pointers |
+| `vulnre`      | Vulnerability-research & reverse-engineering core: endianness, two's complement, ELF layout, exploit mitigations (NX/ASLR/canaries), ROP, format strings, RE tooling |
+| `ghidra`      | Binary RE with Ghidra: reading decompiler pseudocode (`FUN_...`/`param_1`/`local_c`) to compute return values and identify reimplemented libc functions, plus tool knowledge (P-Code, SLEIGH, headless analyzer, key bindings) |
 | `factual`     | Stable, timeless general-knowledge facts |
 | `instruction` | Strict format/instruction compliance (exact strings, JSON output) |
+
+The `python`, `c`, and `cpp` code snippets in this bank were each executed
+or compiled (CPython 3.11, gcc/g++ 13, `-std=c11`/`-std=c++17`) and their
+answers taken from the actual program output, so the expected values are
+ground-truth rather than hand-derived. The `ghidra` decompiler-reading
+questions were verified the same way — the equivalent logic was compiled and
+run to confirm each expected return value. The `vulnre` and `ghidra`
+knowledge questions are deterministic security/RE facts with single
+checkable answers (an acronym, a mnemonic, a section name, an IR/tool name, a
+numeric conversion), keeping them programmatically gradable like the rest of
+the bank — they are knowledge and static-analysis checks, not a hands-on
+exploitation or live-debugging harness.
 
 Every question has a single programmatically-checkable answer (numeric
 match with optional tolerance, exact string match, regex, substring, or
@@ -235,6 +252,35 @@ markdown code fences are stripped first. If you change any question set,
 old and new runs get different `questions_hash` values, so stale
 comparisons are flagged instead of silently mixing scores from different
 question sets.
+
+## Testing
+
+The repo ships a test suite so you can change the tool (or the question bank)
+on an airgapped network and confirm nothing broke. It uses **only the Python
+standard library** (`unittest` plus a stdlib `http.server` mock) and makes
+**no outbound network calls** — the integration and system tests spin up a
+loopback-only (127.0.0.1) mock LLM endpoint, so nothing leaves the host.
+
+```bash
+python3 run_tests.py            # run everything
+python3 run_tests.py -v         # verbose
+python3 run_tests.py test_unit  # one module by name
+# equivalent stdlib entrypoint:
+python3 -m unittest discover -s tests -t .
+```
+
+Three layers of coverage:
+
+| Layer | File | What it verifies |
+|-------|------|------------------|
+| **Unit** | `tests/test_unit.py` | Pure functions: response cleaning, number/JSON extraction, every grading type, question validation, multi-file loading (dedupe, order-independent hash, filters), and summary statistics. |
+| **Integration** | `tests/test_integration.py` | The API layer over a real local HTTP round-trip: auth headers, request shape, HTTP/connection errors, retry-with-backoff, and `run_one` turning a response into a graded entry (including token estimation and error recording). |
+| **System** | `tests/test_system.py` | `benchmark.py` invoked as a subprocess end to end: `ping`, `run` (save + summary), category/limit filters, concurrency, the `--fail-under` (exit 2) and `--fail-if-regression` (exit 3) codes, and the `compare`/`history`/`categories` subcommands. |
+| **Bank integrity** | `tests/test_bank.py` | The shipped `questions.json`: valid JSON, unique ids, all questions validate, regexes compile, and — most usefully — every numeric/exact/json question grades *its own* canonical answer as correct, so an inconsistent edit fails the test and names the offending question. |
+
+If you add or edit questions, run `python3 run_tests.py test_bank` for a fast
+(sub-second, no server) check that the bank is still internally consistent
+before running the full model benchmark.
 
 ## Notes / limitations
 
