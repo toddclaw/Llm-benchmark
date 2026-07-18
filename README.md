@@ -23,15 +23,28 @@ endpoint you point it at.
 
 ## How it works
 
-`questions.json` ships 60 questions across 5 categories (12 each):
+`questions.json` ships 108 questions across 9 categories (12 each):
 
 | Category      | Tests |
 |---------------|-------|
 | `math`        | Arithmetic and basic word problems |
 | `logic`       | Short deductive-reasoning puzzles |
 | `code`        | Predicting exact output of small Python snippets |
+| `python`      | Forward-development Python: functions, comprehensions, closures, generators, error handling |
+| `c`           | Forward-development C: pointers, arrays, bit ops, integer/`unsigned` semantics, `sizeof`, precedence |
+| `cpp`         | Forward-development C++: STL containers/algorithms, strings, references, templates, lambdas, smart pointers |
+| `vulnre`      | Vulnerability-research & reverse-engineering core: endianness, two's complement, ELF layout, exploit mitigations (NX/ASLR/canaries), ROP, format strings, RE tooling |
 | `factual`     | Stable, timeless general-knowledge facts |
 | `instruction` | Strict format/instruction compliance (exact strings, JSON output) |
+
+The `python`, `c`, and `cpp` code snippets in this bank were each executed
+or compiled (CPython 3.11, gcc/g++ 13, `-std=c11`/`-std=c++17`) and their
+answers taken from the actual program output, so the expected values are
+ground-truth rather than hand-derived. The `vulnre` set is deterministic
+security knowledge with single checkable answers (an acronym, a mnemonic, a
+section name, a numeric conversion), keeping it programmatically gradable
+like the rest of the bank — it is a knowledge check, not a hands-on
+exploitation harness.
 
 Every question has a single programmatically-checkable answer (numeric
 match with optional tolerance, exact string match, regex, substring, or
