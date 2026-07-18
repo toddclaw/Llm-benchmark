@@ -74,5 +74,49 @@ class BankIntegrityTests(unittest.TestCase):
             self.assertIn(expected, cats)
 
 
+class HardTierIntegrityTests(unittest.TestCase):
+    """Same integrity guards for the opt-in hard_questions.json comparison tier."""
+
+    HARD_FILE = os.path.join(ROOT, "hard_questions.json")
+
+    @classmethod
+    def setUpClass(cls):
+        if not os.path.exists(cls.HARD_FILE):
+            raise unittest.SkipTest("hard_questions.json not present")
+        cls.questions, _ = benchmark.load_questions([cls.HARD_FILE])
+
+    def test_ids_unique(self):
+        ids = [q["id"] for q in self.questions]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_regex_patterns_compile(self):
+        for q in self.questions:
+            if q["grading"]["type"] == "regex":
+                try:
+                    re.compile(q["grading"]["pattern"])
+                except re.error as e:
+                    self.fail("bad regex in {}: {}".format(q["id"], e))
+
+    def test_deterministic_answers_self_grade(self):
+        for q in self.questions:
+            g = q["grading"]
+            gtype = g["type"]
+            if gtype in ("numeric", "exact", "contains"):
+                resp = str(g["answer"])
+            elif gtype == "json":
+                resp = json.dumps(g["expected"])
+            else:
+                continue
+            ok, note, score = benchmark.grade(q, resp)
+            self.assertTrue(ok, "{} did not self-grade correct: {}".format(q["id"], note))
+
+    def test_ids_do_not_collide_with_builtin(self):
+        builtin, _ = benchmark.load_questions([benchmark.DEFAULT_QUESTIONS_FILE])
+        builtin_ids = {q["id"] for q in builtin}
+        hard_ids = {q["id"] for q in self.questions}
+        self.assertEqual(builtin_ids & hard_ids, set(),
+                         "hard-tier ids collide with built-in ids")
+
+
 if __name__ == "__main__":
     unittest.main()
