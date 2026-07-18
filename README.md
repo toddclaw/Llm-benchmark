@@ -253,6 +253,35 @@ old and new runs get different `questions_hash` values, so stale
 comparisons are flagged instead of silently mixing scores from different
 question sets.
 
+## Testing
+
+The repo ships a test suite so you can change the tool (or the question bank)
+on an airgapped network and confirm nothing broke. It uses **only the Python
+standard library** (`unittest` plus a stdlib `http.server` mock) and makes
+**no outbound network calls** — the integration and system tests spin up a
+loopback-only (127.0.0.1) mock LLM endpoint, so nothing leaves the host.
+
+```bash
+python3 run_tests.py            # run everything
+python3 run_tests.py -v         # verbose
+python3 run_tests.py test_unit  # one module by name
+# equivalent stdlib entrypoint:
+python3 -m unittest discover -s tests -t .
+```
+
+Three layers of coverage:
+
+| Layer | File | What it verifies |
+|-------|------|------------------|
+| **Unit** | `tests/test_unit.py` | Pure functions: response cleaning, number/JSON extraction, every grading type, question validation, multi-file loading (dedupe, order-independent hash, filters), and summary statistics. |
+| **Integration** | `tests/test_integration.py` | The API layer over a real local HTTP round-trip: auth headers, request shape, HTTP/connection errors, retry-with-backoff, and `run_one` turning a response into a graded entry (including token estimation and error recording). |
+| **System** | `tests/test_system.py` | `benchmark.py` invoked as a subprocess end to end: `ping`, `run` (save + summary), category/limit filters, concurrency, the `--fail-under` (exit 2) and `--fail-if-regression` (exit 3) codes, and the `compare`/`history`/`categories` subcommands. |
+| **Bank integrity** | `tests/test_bank.py` | The shipped `questions.json`: valid JSON, unique ids, all questions validate, regexes compile, and — most usefully — every numeric/exact/json question grades *its own* canonical answer as correct, so an inconsistent edit fails the test and names the offending question. |
+
+If you add or edit questions, run `python3 run_tests.py test_bank` for a fast
+(sub-second, no server) check that the bank is still internally consistent
+before running the full model benchmark.
+
 ## Notes / limitations
 
 - Not a general-purpose eval suite (no MMLU/HumanEval-scale coverage) — it's
