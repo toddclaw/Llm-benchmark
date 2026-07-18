@@ -23,7 +23,7 @@ endpoint you point it at.
 
 ## How it works
 
-`questions.json` ships 108 questions across 9 categories (12 each):
+`questions.json` ships 120 questions across 10 categories (12 each):
 
 | Category      | Tests |
 |---------------|-------|
@@ -34,17 +34,21 @@ endpoint you point it at.
 | `c`           | Forward-development C: pointers, arrays, bit ops, integer/`unsigned` semantics, `sizeof`, precedence |
 | `cpp`         | Forward-development C++: STL containers/algorithms, strings, references, templates, lambdas, smart pointers |
 | `vulnre`      | Vulnerability-research & reverse-engineering core: endianness, two's complement, ELF layout, exploit mitigations (NX/ASLR/canaries), ROP, format strings, RE tooling |
+| `ghidra`      | Binary RE with Ghidra: reading decompiler pseudocode (`FUN_...`/`param_1`/`local_c`) to compute return values and identify reimplemented libc functions, plus tool knowledge (P-Code, SLEIGH, headless analyzer, key bindings) |
 | `factual`     | Stable, timeless general-knowledge facts |
 | `instruction` | Strict format/instruction compliance (exact strings, JSON output) |
 
 The `python`, `c`, and `cpp` code snippets in this bank were each executed
 or compiled (CPython 3.11, gcc/g++ 13, `-std=c11`/`-std=c++17`) and their
 answers taken from the actual program output, so the expected values are
-ground-truth rather than hand-derived. The `vulnre` set is deterministic
-security knowledge with single checkable answers (an acronym, a mnemonic, a
-section name, a numeric conversion), keeping it programmatically gradable
-like the rest of the bank — it is a knowledge check, not a hands-on
-exploitation harness.
+ground-truth rather than hand-derived. The `ghidra` decompiler-reading
+questions were verified the same way — the equivalent logic was compiled and
+run to confirm each expected return value. The `vulnre` and `ghidra`
+knowledge questions are deterministic security/RE facts with single
+checkable answers (an acronym, a mnemonic, a section name, an IR/tool name, a
+numeric conversion), keeping them programmatically gradable like the rest of
+the bank — they are knowledge and static-analysis checks, not a hands-on
+exploitation or live-debugging harness.
 
 Every question has a single programmatically-checkable answer (numeric
 match with optional tolerance, exact string match, regex, substring, or
