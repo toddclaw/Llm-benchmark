@@ -149,6 +149,43 @@ python3 benchmark.py run --base-url http://localhost:11434/v1 --api-key ollama -
 python3 benchmark.py compare results/llama3.1_8b_*.json results/qwen2.5_14b_*.json
 ```
 
+## Harder tier for model comparison (`hard_questions.json`)
+
+The built-in bank is tuned for **regression detection** — a strong model
+should score near-perfect on it, and you watch for that number to *drop*. It
+is intentionally *not* hard enough to separate two strong models from each
+other.
+
+For that, there's a separate, opt-in **hard tier** in `hard_questions.json`
+(40 questions across `hard_python`, `hard_c`, `hard_cpp`, `hard_re`). It
+targets things a frontier model can still get wrong *on the merits* rather
+than on formatting: subtle language semantics (mutable default args, closure
+late-binding, `vector(3,1)` vs `{3,1}`, `size()` unsigned underflow, integer
+promotion, floor vs truncated modulo), well-defined-but-surprising C/C++
+behavior, and RE/exploit reasoning (reading x86-64 asm, decompiled-code
+tracing, vulnerability-class identification, little-endian decoding, overflow
+offset math).
+
+It is **not** loaded by default and is meant to be run **only when comparing
+models** — keep using the built-in bank for routine regression checks:
+
+```bash
+# vet a challenger against the incumbent on the hard tier
+python3 benchmark.py run --questions hard_questions.json --model old-model
+python3 benchmark.py run --questions hard_questions.json --model new-model
+python3 benchmark.py compare results/old-model_*.json results/new-model_*.json
+```
+
+Because results are keyed by model **and** question-set hash, the hard-tier
+runs live alongside — and never mix with — your regular regression history.
+You can also merge the two for a single combined run with
+`--questions built-in hard_questions.json`, but running the hard tier on its
+own keeps its score a clean, separate signal.
+
+Every predict-the-output question in the hard tier was executed or compiled
+(CPython 3.11, gcc/g++ 13) to obtain its ground-truth answer, same as the
+built-in code categories.
+
 ## Other useful flags
 
 - `--questions built-in my_questions.json` — merge the built-in bank with your own file(s); see "Adding your own questions" below
